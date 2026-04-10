@@ -1,0 +1,12 @@
+.env
+*.key
+*.pem
+__pycache__/
+node_modules/
+.DS_Store
+dashboard/
+ideas/
+GUIDA.md
+IMPLEMENTAZIONE.md
+IMPLEMENTAZIONE_MONITOR.md
+.claude/

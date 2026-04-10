@@ -1,0 +1,36 @@
+services:
+  assistant:
+    build: .
+    container_name: claudio
+    hostname: claudio
+    platform: linux/arm64
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3333:3333"
+    volumes:
+      - whisper_cache:/home/assistant/.cache
+      - claude_data:/home/assistant/.claude
+      - ${PROJECTS_PATH:-.}:/home/assistant/projects:cached
+      - memory:/home/assistant/memory
+    shm_size: 2g
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 12g
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: claudio-tunnel
+    command: tunnel --no-autoupdate --url http://claudio:3333
+    depends_on:
+      - assistant
+    restart: unless-stopped
+
+volumes:
+  claude_data:
+  memory:
+  whisper_cache:
