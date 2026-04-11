@@ -40,7 +40,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Validazione path: progetto sotto PROJECTS_BASE, file path no `..`, no assoluti
 - Frontend: DiffViewer, FileCard, ChangesTab, CommitBar componenti in claudio-monitor
 - Layout responsive: mobile stacked (accordion), desktop side-by-side (md: breakpoint)
-- Test backend: `pytest tests/test_git_ops.py` (30 test)
+- Test backend: `pytest tests/test_git_ops.py` (31 test)
 - Test frontend: `npm test` in claudio-monitor (27 test, vitest + testing-library)
 
 ## Gestione voci clonate
