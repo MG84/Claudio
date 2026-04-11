@@ -106,6 +106,15 @@ MONITOR_RETENTION_DAYS = 7
 MONITOR_EVENT_HISTORY_LIMIT = 100
 HISTORY_ON_CONNECT_LIMIT = 100
 
+# ── Git operations (Changes tab) ─────────────────────────────────────
+GIT_DIFF_CONTEXT_LINES = 3
+GIT_MAX_DIFF_SIZE = 500_000  # bytes — skip file se diff troppo grande
+CHANGES_EVENT = "changes"
+GIT_ACTIONS = frozenset({
+    "git_stage", "git_unstage", "git_revert",
+    "git_commit", "git_revert_all", "git_diff",
+})
+
 # ── Cleanup ───────────────────────────────────────────────────────────
 UPLOADS_MAX_AGE_HOURS = 24
 CLEANUP_INTERVAL_SECONDS = 3600

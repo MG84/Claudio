@@ -210,6 +210,17 @@ class ClaudeBridge:
             "message_count": session.message_count,
         })
 
+        # Emit git changes for the Changes tab
+        if project_path:
+            try:
+                from bot.git_ops import get_project_diff
+                from bot.config import CHANGES_EVENT
+                diff = await get_project_diff(project_path)
+                if diff:
+                    await emit(CHANGES_EVENT, diff)
+            except Exception as e:
+                log.warning(f"Git diff failed: {e}")
+
         result = "\n".join(response_parts).strip()
         return result or NO_OUTPUT_MESSAGE
 

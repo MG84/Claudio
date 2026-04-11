@@ -17,6 +17,7 @@ from bot.config import (
     DASHBOARD_PORT, DASHBOARD_STATIC_DIR, WS_PATH,
     HISTORY_ON_CONNECT_LIMIT, DASHBOARD_PASSWORD,
     AUTH_COOKIE_NAME, AUTH_COOKIE_MAX_AGE,
+    GIT_ACTIONS, CHANGES_EVENT,
 )
 
 log = logging.getLogger("claudio.ws")
@@ -112,6 +113,9 @@ async def _handle_ws_message(raw: str) -> None:
             if command:
                 asyncio.create_task(_execute_command(command))
 
+        elif action in GIT_ACTIONS:
+            asyncio.create_task(_execute_git_action(action, data))
+
     except (json.JSONDecodeError, Exception) as e:
         log.error(f"WS message error: {e}")
 
@@ -155,6 +159,48 @@ async def _execute_command(command: str) -> None:
         level = command.split(":")[1]
         if level in ("low", "medium", "high"):
             os.environ["CLAUDE_EFFORT"] = level
+
+
+async def _execute_git_action(action: str, data: dict) -> None:
+    """Execute a git action from the dashboard."""
+    from bot.git_ops import (
+        stage_file, unstage_file, revert_file,
+        revert_all, commit, get_project_diff,
+    )
+    from bot.projects import resolve_project
+    from bot.monitor import emit
+
+    project_name = data.get("project", "")
+    matches = resolve_project(project_name)
+    if not matches:
+        await emit("error", {"module": "git", "message": f"Project not found: {project_name}"})
+        return
+
+    project_path = matches[0].path
+
+    try:
+        file_path = data.get("file", "")
+
+        if action == "git_stage":
+            await stage_file(project_path, file_path)
+        elif action == "git_unstage":
+            await unstage_file(project_path, file_path)
+        elif action == "git_revert":
+            await revert_file(project_path, file_path)
+        elif action == "git_revert_all":
+            await revert_all(project_path)
+        elif action == "git_commit":
+            await commit(project_path, data.get("message", ""))
+        elif action == "git_diff":
+            pass  # just re-emit below
+
+        # Re-emit updated diff
+        diff = await get_project_diff(project_path)
+        await emit(CHANGES_EVENT, diff or {
+            "project": project_name, "summary": {"files": 0, "insertions": 0, "deletions": 0}, "files": []
+        })
+    except Exception as e:
+        await emit("error", {"module": "git", "message": str(e)})
 
 
 # ── HTTP Auth ─────────────────────────────────────────────────────────
