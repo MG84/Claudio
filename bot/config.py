@@ -106,6 +106,19 @@ MONITOR_RETENTION_DAYS = 7
 MONITOR_EVENT_HISTORY_LIMIT = 100
 HISTORY_ON_CONNECT_LIMIT = 100
 
+# ── Memory (Mem0 + Ollama + Qdrant) ─────────────────────────────────
+OLLAMA_HOST = _env("OLLAMA_HOST", "http://ollama:11434")
+QDRANT_HOST = _env("QDRANT_HOST", "qdrant")
+QDRANT_PORT = _env_int("QDRANT_PORT", 6333)
+MEM0_COLLECTION = "claudio_memories"
+MEM0_EMBEDDING_MODEL = "nomic-embed-text:latest"
+MEM0_EMBEDDING_DIMS = 768
+MEM0_LLM_MODEL = "llama3.1:8b"
+MEM0_LLM_TEMPERATURE = 0
+MEM0_LLM_MAX_TOKENS = 2000
+MEM0_ENABLED = _env_bool("MEM0_ENABLED", default=True)
+MEM0_SEARCH_LIMIT = 10
+
 # ── Git operations (Changes tab) ─────────────────────────────────────
 GIT_DIFF_CONTEXT_LINES = 3
 GIT_MAX_DIFF_SIZE = 500_000  # bytes — skip file se diff troppo grande
@@ -113,7 +126,31 @@ CHANGES_EVENT = "changes"
 GIT_ACTIONS = frozenset({
     "git_stage", "git_unstage", "git_revert",
     "git_commit", "git_revert_all", "git_diff",
+    "git_refresh_all",
 })
+
+# ── Market data ─────────────────────────────────────────────────────
+TRADING_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+MARKET_CACHE_SECONDS = 60
+MARKET_TICKER_CACHE_SECONDS = 30
+MARKET_OHLCV_LIMIT = 400
+
+# ── Kronos (crypto predictions) ──────────────────────────────────────
+KRONOS_ENABLED = _env_bool("KRONOS_ENABLED", default=True)
+KRONOS_MODEL_NAME = "NeoQuasar/Kronos-small"
+KRONOS_TOKENIZER_NAME = "NeoQuasar/Kronos-Tokenizer-base"
+KRONOS_MODEL_DIR = Path("/home/assistant/kronos_model")
+KRONOS_MAX_CONTEXT = 512
+KRONOS_EXCHANGE = "binance"
+KRONOS_SYMBOL = "BTC/USDT"
+KRONOS_TIMEFRAME = "1h"
+KRONOS_LOOKBACK = 400
+KRONOS_PRED_LEN = 12            # 12 candele = 12h avanti con timeframe 1h
+KRONOS_TEMPERATURE = 0.6
+KRONOS_TOP_P = 0.9
+KRONOS_SAMPLE_COUNT = 5
+KRONOS_INTERVAL_SECONDS = 3600  # ogni ora
+KRONOS_DB_PATH = MEMORY_DIR / "kronos.db"
 
 # ── Cleanup ───────────────────────────────────────────────────────────
 UPLOADS_MAX_AGE_HOURS = 24
