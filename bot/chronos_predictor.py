@@ -185,6 +185,40 @@ async def predict(
     }
 
 
+# -- Quick-access API ------------------------------------------------------
+
+def get_latest_prediction(pair: str | None = None) -> dict | None:
+    """Return most recent Chronos prediction from DB, optionally filtered by pair."""
+    db = _get_db()
+    if pair:
+        row = db.execute(
+            "SELECT created_at, symbol, timeframe, current_price, point_forecast, "
+            "quantile_forecast, direction, change_pct "
+            "FROM chronos_predictions WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
+            (pair,),
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT created_at, symbol, timeframe, current_price, point_forecast, "
+            "quantile_forecast, direction, change_pct "
+            "FROM chronos_predictions ORDER BY created_at DESC LIMIT 1",
+        ).fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "created_at": row[0],
+        "symbol": row[1],
+        "timeframe": row[2],
+        "current_price": row[3],
+        "point_forecast": json.loads(row[4]),
+        "quantile_forecast": json.loads(row[5]),
+        "direction": row[6],
+        "change_pct": row[7],
+    }
+
+
 # -- Verification ----------------------------------------------------------
 
 async def verify_predictions() -> int:

@@ -18,7 +18,7 @@ from bot.memory import init as init_memory
 from bot.monitor import start_metrics_task, emit_status
 from bot.trading import init as init_trading
 from bot.ws_server import start_server as start_dashboard
-from bot.handlers import commands, model, projects_cmds, voice_cmds, kronos_cmds, messages
+from bot.handlers import commands, model, projects_cmds, voice_cmds, kronos_cmds, trading_cmds, messages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +42,7 @@ async def main() -> None:
     dp.include_router(projects_cmds.router)
     dp.include_router(voice_cmds.router)
     dp.include_router(kronos_cmds.router)
+    dp.include_router(trading_cmds.router)
     dp.include_router(messages.router)  # catch-all, must be last
 
     # Initialize per-chat memory (Mem0)
