@@ -45,10 +45,10 @@ async def cmd_portfolio(message: Message) -> None:
     if positions:
         lines.append(f"\nPosizioni aperte ({len(positions)}):")
         for p in positions:
+            sl = f" SL ${p['stop_loss']:,.2f}" if p.get('stop_loss') else ""
             lines.append(
                 f"  {p['side'].upper()} {p['volume']} {p['pair']} "
-                f"@ ${p['entry_price']:,.2f}"
-                f"{' SL $' + f'{p[\"stop_loss\"]:,.2f}' if p.get('stop_loss') else ''}"
+                f"@ ${p['entry_price']:,.2f}{sl}"
             )
     else:
         lines.append("\nNessuna posizione aperta.")
