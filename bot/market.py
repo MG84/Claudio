@@ -9,7 +9,6 @@ import time
 
 import ccxt.async_support as ccxt_async
 import pandas as pd
-import pandas_ta as ta
 
 from bot.config import (
     TRADING_PAIRS,
@@ -162,6 +161,8 @@ async def get_orderbook(pair: str = "BTC/USDT", depth: int = 10) -> dict:
 
 def _compute_indicators(ohlcv: list[list]) -> dict:
     """Compute technical indicators from OHLCV data. Blocks — call via asyncio.to_thread."""
+    import pandas_ta as ta  # lazy import — heavy lib, only needed here
+
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
     close = df["close"]
