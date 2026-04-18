@@ -152,6 +152,17 @@ KRONOS_SAMPLE_COUNT = 5
 KRONOS_INTERVAL_SECONDS = 3600  # ogni ora
 KRONOS_DB_PATH = MEMORY_DIR / "kronos.db"
 
+# ── Trading safety limits ────────────────────────────────────────────
+TRADING_ENABLED = _env_bool("TRADING_ENABLED", default=True)
+TRADING_MODE = _env("TRADING_MODE", "paper")
+MAX_POSITION_PCT = 0.20          # max 20% of portfolio per position
+MAX_OPEN_POSITIONS = 3
+MAX_DAILY_LOSS_PCT = 0.05        # 5% → stop trading for the day
+MAX_DRAWDOWN_PCT = 0.15          # 15% → kill switch
+STOP_LOSS_REQUIRED = True
+MAX_TRADES_PER_DAY = 10
+TRADES_DB_PATH = MEMORY_DIR / "trades.db"
+
 # ── Chronos-Bolt (univariate close-price forecasting) ────────────────
 CHRONOS_ENABLED = _env_bool("CHRONOS_ENABLED", default=True)
 CHRONOS_MODEL_NAME = "amazon/chronos-bolt-small"

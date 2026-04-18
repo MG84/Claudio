@@ -16,6 +16,7 @@ from bot.chronos_predictor import init as init_chronos, chronos_loop
 from bot.kronos import init as init_kronos, kronos_loop
 from bot.memory import init as init_memory
 from bot.monitor import start_metrics_task, emit_status
+from bot.trading import init as init_trading
 from bot.ws_server import start_server as start_dashboard
 from bot.handlers import commands, model, projects_cmds, voice_cmds, kronos_cmds, messages
 
@@ -45,6 +46,9 @@ async def main() -> None:
 
     # Initialize per-chat memory (Mem0)
     init_memory()
+
+    # Initialize trading (SQLite, paper mode)
+    init_trading()
 
     # Initialize prediction models (async, non-blocking)
     await init_kronos()
