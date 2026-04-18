@@ -24,6 +24,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - `bot/handlers/kronos_cmds.py` — /predict, /accuracy (Kronos crypto predictions)
 - `bot/handlers/messages.py` — Handler messaggi (testo, vocali, foto, documenti, send queue)
 - `bot/market.py` — Market data aggregator: OHLCV, ticker, orderbook, indicatori tecnici (RSI, EMA, MACD, Bollinger, ATR) via ccxt + pandas-ta
+- `bot/chronos_predictor.py` — Chronos-Bolt: univariate close-price forecasting con bande di incertezza (quantili)
 - `bot/kronos.py` — Kronos advisor: model loading, OHLCV fetch, inference, SQLite, verifica, loop periodico
 - `scripts/entrypoint.sh` — Startup container
 - `docker-compose.yml` — Configurazione Docker (servizi: assistant, ollama, qdrant, tunnel)
@@ -112,6 +113,20 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Weights: ~100MB da HuggingFace, cached in volume Docker `hf_cache`
 - File: `bot/kronos.py` (core), `bot/handlers/kronos_cmds.py` (comandi)
 - Zero rischio finanziario — solo osservazione e tracking
+
+## Chronos-Bolt (univariate forecasting)
+- Secondo segnale previsionale accanto a Kronos, basato su amazon/chronos-bolt-small (ChronosPipeline)
+- Input: close prices (ultimi 400 candles via `bot/market.py` `get_ohlcv()`)
+- Output: quantile forecasts (q10, q50, q90) per bande di incertezza + direzione + change%
+- Previsione: 12 candele avanti (12h con timeframe 1h), inference CPU via `asyncio.to_thread()`
+- Loop periodico ogni ora per tutti i TRADING_PAIRS: predict + verify + emit evento `chronos_prediction`
+- SQLite: tabella `chronos_predictions` in `/home/assistant/memory/kronos.db` (DB condiviso con Kronos)
+- Schema: id, created_at, symbol, timeframe, current_price, point_forecast (JSON), quantile_forecast (JSON), direction, change_pct, verified, actual_prices, direction_correct, mae
+- Verifica automatica: confronta previsioni passate con prezzi reali, calcola direction_correct e MAE
+- Config: `bot/config.py` (costanti `CHRONOS_*`), disabilitabile con `CHRONOS_ENABLED=false`
+- Weights da HuggingFace, cached in volume Docker `hf_cache`
+- File: `bot/chronos_predictor.py`
+- Se Kronos e Chronos-Bolt concordano sulla direzione → maggiore confidenza; se discordano → cautela
 
 ## Gestione voci clonate
 - Registro in `/home/assistant/memory/voices/voices.json`
