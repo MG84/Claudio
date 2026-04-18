@@ -16,6 +16,7 @@ from bot.chronos_predictor import init as init_chronos, chronos_loop
 from bot.kronos import init as init_kronos, kronos_loop
 from bot.memory import init as init_memory
 from bot.monitor import start_metrics_task, emit_status
+from bot.scanner import market_scanner_loop, risk_monitor_loop
 from bot.trading import init as init_trading
 from bot.ws_server import start_server as start_dashboard
 from bot.handlers import commands, model, projects_cmds, voice_cmds, kronos_cmds, trading_cmds, messages
@@ -59,6 +60,8 @@ async def main() -> None:
     asyncio.create_task(cleanup_uploads_task())
     asyncio.create_task(kronos_loop())
     asyncio.create_task(chronos_loop())
+    asyncio.create_task(market_scanner_loop(bot))
+    asyncio.create_task(risk_monitor_loop(bot))
     asyncio.create_task(start_dashboard())
     asyncio.create_task(start_metrics_task())
     asyncio.create_task(emit_status())
