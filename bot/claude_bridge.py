@@ -4,8 +4,8 @@ Manages persistent sessions per chat and per project, with concurrency safety.
 """
 
 import asyncio
+import json
 import logging
-import os
 import random
 import time
 from dataclasses import dataclass
@@ -16,15 +16,18 @@ from bot.config import (
     GENERAL_WORKSPACE, ALLOWED_TOOLS, PERMISSION_MODE,
     GENERAL_SESSION_KEY, NO_OUTPUT_MESSAGE,
     DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_MAX_TURNS,
+    MEMORY_DIR,
     get_runtime,
 )
-from bot.prompts import BASE_PROMPT, PROJECT_PROMPT_SUFFIX
+from bot.prompts import BASE_PROMPT, PROJECT_PROMPT_SUFFIX, MEMORY_SECTION, TRADING_PROMPT
+from bot import memory as mem
 
 log = logging.getLogger("claudio.bridge")
 
 MAX_RETRIES = 2
 RETRY_BASE_DELAY = 2.0
 TOOL_OUTPUT_PREVIEW_LENGTH = 500
+SESSIONS_FILE = MEMORY_DIR / "sessions.json"
 
 
 def _format_tool_input(tool: str, input_data: dict) -> str:
@@ -76,6 +79,57 @@ class ClaudeBridge:
         self._sessions: dict[tuple[int, str], SessionInfo] = {}
         self._previous_sessions: dict[tuple[int, str], SessionInfo] = {}
         self._locks: dict[tuple[int, str], asyncio.Lock] = {}
+        self._load()
+
+    # ── Persistence ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _key_to_str(key: tuple[int, str]) -> str:
+        return f"{key[0]}:{key[1]}"
+
+    @staticmethod
+    def _str_to_key(s: str) -> tuple[int, str]:
+        chat_id_str, project = s.split(":", 1)
+        return (int(chat_id_str), project)
+
+    def _load(self) -> None:
+        """Load sessions from disk."""
+        try:
+            if SESSIONS_FILE.exists():
+                data = json.loads(SESSIONS_FILE.read_text())
+                for k, v in data.get("sessions", {}).items():
+                    self._sessions[self._str_to_key(k)] = SessionInfo(
+                        session_id=v.get("session_id"),
+                        message_count=v.get("message_count", 0),
+                    )
+                for k, v in data.get("previous", {}).items():
+                    self._previous_sessions[self._str_to_key(k)] = SessionInfo(
+                        session_id=v.get("session_id"),
+                        message_count=v.get("message_count", 0),
+                    )
+                log.info(f"Loaded {len(self._sessions)} sessions from disk")
+        except Exception as e:
+            log.warning(f"Failed to load sessions: {e}")
+
+    def _save(self) -> None:
+        """Persist sessions to disk."""
+        try:
+            SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "sessions": {
+                    self._key_to_str(k): {"session_id": v.session_id, "message_count": v.message_count}
+                    for k, v in self._sessions.items() if v.session_id
+                },
+                "previous": {
+                    self._key_to_str(k): {"session_id": v.session_id, "message_count": v.message_count}
+                    for k, v in self._previous_sessions.items() if v.session_id
+                },
+            }
+            SESSIONS_FILE.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            log.warning(f"Failed to save sessions: {e}")
+
+    # ── Session management ───────────────────────────────────────────
 
     def _session_key(self, chat_id: int, project_name: str | None) -> tuple[int, str]:
         return (chat_id, project_name or GENERAL_SESSION_KEY)
@@ -96,6 +150,7 @@ class ClaudeBridge:
         if current and current.session_id:
             self._previous_sessions[key] = current
         self._sessions.pop(key, None)
+        self._save()
         log.info(f"Session reset: chat={chat_id}, project={project_name or 'general'}")
 
     def resume_previous(self, chat_id: int, project_name: str | None = None) -> str | None:
@@ -104,23 +159,47 @@ class ClaudeBridge:
         if previous:
             self._sessions[key] = previous
             self._previous_sessions.pop(key, None)
+            self._save()
             log.info(f"Session resumed: chat={chat_id}, session={previous.session_id}")
             return previous.session_id
         return None
 
-    def _build_system_prompt(self, project_name: str | None, project_path: str | None) -> str:
-        prompt = BASE_PROMPT
+    async def _build_system_prompt(
+        self,
+        chat_id: int,
+        prompt_text: str,
+        project_name: str | None,
+        project_path: str | None,
+    ) -> str:
+        system = BASE_PROMPT
+
+        # Inject per-chat memories from Mem0
+        try:
+            memories = await mem.search(prompt_text, chat_id)
+            if memories:
+                formatted = "\n".join(f"- {m}" for m in memories)
+                system += MEMORY_SECTION.format(memories=formatted)
+        except Exception as e:
+            log.warning(f"Memory search failed: {e}")
+
         if project_name and project_path:
-            prompt += PROJECT_PROMPT_SUFFIX.format(
+            system += PROJECT_PROMPT_SUFFIX.format(
                 project_name=project_name,
                 project_path=project_path,
             )
-        return prompt
+
+        # Trading roles (only when enabled)
+        from bot.config import TRADING_ENABLED
+        if TRADING_ENABLED:
+            system += TRADING_PROMPT
+
+        return system
 
     async def query(
         self,
         chat_id: int,
         prompt: str,
+        user_text: str | None = None,
         project_name: str | None = None,
         project_path: str | None = None,
     ) -> str:
@@ -131,12 +210,13 @@ class ClaudeBridge:
             return "Sto ancora elaborando il messaggio precedente. Attendi..."
 
         async with lock:
-            return await self._execute_query(key, prompt, project_name, project_path)
+            return await self._execute_query(key, prompt, user_text, project_name, project_path)
 
     async def _execute_query(
         self,
         key: tuple[int, str],
         prompt: str,
+        user_text: str | None,
         project_name: str | None,
         project_path: str | None,
     ) -> str:
@@ -146,7 +226,9 @@ class ClaudeBridge:
         max_turns = int(get_runtime("CLAUDE_MAX_TURNS", str(DEFAULT_MAX_TURNS)))
 
         cwd = project_path or str(GENERAL_WORKSPACE)
-        system_prompt = self._build_system_prompt(project_name, project_path)
+        system_prompt = await self._build_system_prompt(
+            key[0], prompt, project_name, project_path,
+        )
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
@@ -198,6 +280,7 @@ class ClaudeBridge:
             session.session_id = new_session_id
             session.message_count += 1
             self._sessions[key] = session
+            self._save()
             log.info(
                 f"Chat {key[0]}, project={project_name or 'general'}: "
                 f"session={new_session_id}, messages={session.message_count}"
@@ -211,18 +294,24 @@ class ClaudeBridge:
         })
 
         # Emit git changes for the Changes tab
-        if project_path:
-            try:
-                from bot.git_ops import get_project_diff
-                from bot.config import CHANGES_EVENT
-                diff = await get_project_diff(project_path)
-                if diff:
-                    await emit(CHANGES_EVENT, diff)
-            except Exception as e:
-                log.warning(f"Git diff failed: {e}")
+        # Use cwd (which falls back to GENERAL_WORKSPACE) so changes
+        # are detected even for queries without an explicit project context.
+        try:
+            from bot.git_ops import get_project_diff
+            from bot.config import CHANGES_EVENT
+            diff = await get_project_diff(cwd)
+            if diff:
+                await emit(CHANGES_EVENT, diff)
+        except Exception as e:
+            log.warning(f"Git diff failed: {e}")
 
         result = "\n".join(response_parts).strip()
-        return result or NO_OUTPUT_MESSAGE
+        final = result or NO_OUTPUT_MESSAGE
+
+        # Fire-and-forget: extract and store facts from this turn
+        asyncio.create_task(mem.add(user_text or prompt, final, key[0]))
+
+        return final
 
     async def _call_sdk(
         self, prompt: str, options: ClaudeAgentOptions, project_name: str | None = None

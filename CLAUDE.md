@@ -5,7 +5,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 ## Struttura
 - `bot/main.py` — Entrypoint, wiring router e startup task in background
 - `bot/config.py` — Tutte le costanti, variabili d'ambiente e hot-reload da `runtime_config.json`
-- `bot/prompts.py` — System prompt (BASE_PROMPT, PROJECT_PROMPT_SUFFIX, PLANNING_PREFIX, MEMORY_SECTION)
+- `bot/prompts.py` — System prompt (BASE_PROMPT, PROJECT_PROMPT_SUFFIX, PLANNING_PREFIX, MEMORY_SECTION, TRADING_PROMPT)
 - `bot/claude_bridge.py` — Bridge Claude Agent SDK, sessioni per-chat/progetto, asyncio.Lock, retry, memory injection
 - `bot/memory.py` — Memoria persistente per-chat via Mem0 (Ollama + Qdrant, 100% locale)
 - `bot/voice.py` — STT (faster-whisper) + TTS (Qwen3-TTS con fallback Edge TTS)
@@ -22,10 +22,13 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - `bot/handlers/projects_cmds.py` — /projects, /link, /unlink
 - `bot/handlers/voice_cmds.py` — /voice, /text
 - `bot/handlers/kronos_cmds.py` — /predict, /accuracy (Kronos crypto predictions)
+- `bot/handlers/trading_cmds.py` — /portfolio, /market, /trades, /mode, /kill, /autonomous, /scan
 - `bot/handlers/messages.py` — Handler messaggi (testo, vocali, foto, documenti, send queue)
 - `bot/market.py` — Market data aggregator: OHLCV, ticker, orderbook, indicatori tecnici (RSI, EMA, MACD, Bollinger, ATR) via ccxt + pandas-ta
 - `bot/chronos_predictor.py` — Chronos-Bolt: univariate close-price forecasting con bande di incertezza (quantili)
-- `bot/kronos.py` — Kronos advisor: model loading, OHLCV fetch, inference, SQLite, verifica, loop periodico
+- `bot/kronos.py` — Kronos advisor: model loading, OHLCV fetch, inference, SQLite, verifica, loop periodico, multi-pair, confidence scoring
+- `bot/trading.py` — Execution layer: paper trading, risk manager hard-coded, trade journal SQLite
+- `bot/scanner.py` — Market scanner (hourly) + risk monitor (every 5 min), background loops
 - `scripts/entrypoint.sh` — Startup container
 - `docker-compose.yml` — Configurazione Docker (servizi: assistant, ollama, qdrant, tunnel)
 - `Dockerfile` — Immagine Ubuntu 24.04, Node.js 22, ffmpeg
@@ -45,7 +48,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Dashboard locale su porta 3333 (servita dal bot via aiohttp)
 - Eventi inviati via WebSocket diretto (/ws) — zero servizi cloud
 - Cloudflare Tunnel per accesso remoto (URL nei log di claudio-tunnel)
-- Tipi evento: message_received, query_start, tool_use, query_end, cost, stt_start, stt_end, tts_end, metrics, status, error, changes, kronos_prediction
+- Tipi evento: message_received, query_start, tool_use, query_end, cost, stt_start, stt_end, tts_end, metrics, status, error, changes, kronos_prediction, chronos_prediction, market_scan, portfolio_update, risk_alert
 - Metriche sistema pubblicate ogni 5 secondi
 - Storico eventi in SQLite: /home/assistant/memory/monitor.db (retention 7 giorni)
 - Al connect WebSocket, il server invia gli ultimi 100 eventi dalla SQLite + lo stato git di tutti i progetti
@@ -107,6 +110,10 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - SQLite separato: `/home/assistant/memory/kronos.db` (tabella `predictions`)
 - Schema: id, created_at, symbol, timeframe, current_price, predictions (JSON), verified, actual_prices (JSON), direction_correct, mae
 - Verifica automatica: confronta previsioni passate con prezzi reali, calcola direction_correct e MAE
+- Multi-pair: loop su `TRADING_PAIRS`, non solo BTC/USDT
+- `get_latest_prediction(pair?)` — ultima previsione dal DB senza inference
+- `predict_pair(pair, timeframe?)` — previsione per qualsiasi coppia
+- `get_prediction_confidence(pair?)` — confidenza 0-1 basata su storico, scalata per sample size
 - Comandi Telegram: `/predict` (previsione manuale), `/accuracy` (statistiche)
 - Config: `bot/config.py` (costanti `KRONOS_*`), disabilitabile con `KRONOS_ENABLED=false`
 - Modello: repo Kronos clonato nel Dockerfile, solo `model/` (~50KB) in `/home/assistant/kronos_model/`
@@ -127,6 +134,53 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Weights da HuggingFace, cached in volume Docker `hf_cache`
 - File: `bot/chronos_predictor.py`
 - Se Kronos e Chronos-Bolt concordano sulla direzione → maggiore confidenza; se discordano → cautela
+
+## Trading (execution layer)
+- Paper trading simulato localmente in SQLite (`/home/assistant/memory/trades.db`)
+- Limiti di rischio hard-coded in Python (NON nel prompt, NON bypassabili):
+  - Max posizione: 20% del portfolio (`MAX_POSITION_PCT`)
+  - Max posizioni aperte: 3 (`MAX_OPEN_POSITIONS`)
+  - Max perdita giornaliera: 5% (`MAX_DAILY_LOSS_PCT`) → stop trading
+  - Max drawdown: 15% (`MAX_DRAWDOWN_PCT`) → kill switch automatico
+  - Stop-loss obbligatorio (`STOP_LOSS_REQUIRED`)
+  - Max trade al giorno: 10 (`MAX_TRADES_PER_DAY`)
+- `risk_check()` eseguito PRIMA di ogni trade, non bypassabile
+- Funzioni: `place_order()`, `close_position()`, `cancel_order()`, `emergency_close_all()`
+- Portfolio: `get_balance()`, `get_positions()`, `get_trade_history()`, `get_daily_pnl()`, `get_risk_status()`
+- Mode: `paper` (default) / `live` (placeholder, richiede conferma esplicita)
+- Trade journal: ogni trade salvato con timestamp, parametri, esito, reasoning di Claude
+- Config: `bot/config.py` (costanti `TRADING_*`, `MAX_*`), disabilitabile con `TRADING_ENABLED=false`
+- File: `bot/trading.py`
+
+## Trading Commands (Telegram)
+- `/portfolio` — bilancio, posizioni aperte, P&L giornaliero
+- `/market [pair]` — snapshot mercato con indicatori + previsioni Kronos/Chronos (default BTC/USDT)
+- `/trades [n]` — ultimi N trade (default 10) con P&L
+- `/mode paper|live` — switch modalita' (live richiede "CONFERMA")
+- `/kill` — emergency close all, chiusura immediata tutte le posizioni
+- `/autonomous on|off` — abilita/disabilita trading autonomo
+- `/scan` — scan completo: mercato + previsioni + risk status + posizioni
+- Tutti i comandi gated da `is_allowed_user()`, graceful degradation se `TRADING_ENABLED=false`
+- File: `bot/handlers/trading_cmds.py`
+
+## Market Scanner + Risk Monitor
+- Market scanner loop (ogni ora): assembla contesto completo (indicatori, Kronos, Chronos, portfolio) e invia brief su Telegram
+- Concordanza segnali: se Kronos e Chronos concordano → segnalato, se discordano → cautela
+- Risk monitor loop (ogni 5 min): controlla limiti di rischio
+  - Drawdown >= 15% → `emergency_close_all()` + disabilita autonomous
+  - Perdita giornaliera >= 5% → disabilita autonomous
+  - Warning a 80% dei limiti → emit `risk_alert`
+  - Emit `portfolio_update` ad ogni ciclo
+- Notifiche Telegram via first user in `TELEGRAM_ALLOWED_USERS`
+- File: `bot/scanner.py`
+
+## System Prompt (Trading)
+- Quando `TRADING_ENABLED=true`, il system prompt include `TRADING_PROMPT` con 3 ruoli:
+  - **Analyst**: legge previsioni, indicatori, cerca pattern e divergenze
+  - **Trader**: decide entrate/uscite, spiega sempre il reasoning
+  - **Risk Manager**: mai >2% per trade, sempre stop-loss, HOLD e' valido
+- Lista strumenti disponibili e limiti hard-coded nel prompt
+- Regola d'oro: meglio perdere un'opportunita' che perdere capitale
 
 ## Gestione voci clonate
 - Registro in `/home/assistant/memory/voices/voices.json`
