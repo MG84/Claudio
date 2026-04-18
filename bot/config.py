@@ -152,6 +152,14 @@ KRONOS_SAMPLE_COUNT = 5
 KRONOS_INTERVAL_SECONDS = 3600  # ogni ora
 KRONOS_DB_PATH = MEMORY_DIR / "kronos.db"
 
+# ── Chronos-Bolt (univariate close-price forecasting) ────────────────
+CHRONOS_ENABLED = _env_bool("CHRONOS_ENABLED", default=True)
+CHRONOS_MODEL_NAME = "amazon/chronos-bolt-small"
+CHRONOS_PRED_LEN = 12
+CHRONOS_LOOKBACK = 400
+CHRONOS_INTERVAL_SECONDS = 3600
+CHRONOS_DB_PATH = MEMORY_DIR / "kronos.db"  # shared DB, separate table
+
 # ── Cleanup ───────────────────────────────────────────────────────────
 UPLOADS_MAX_AGE_HOURS = 24
 CLEANUP_INTERVAL_SECONDS = 3600
