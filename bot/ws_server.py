@@ -308,6 +308,123 @@ async def _kronos_handler(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def _chronos_pred_handler(request: web.Request) -> web.Response:
+    """Return Chronos-Bolt prediction history."""
+    if not _check_auth(request):
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        from bot.kronos import _get_db
+        import json as _json
+
+        db = _get_db()
+        rows = db.execute(
+            "SELECT id, created_at, symbol, timeframe, current_price, point_forecast, "
+            "quantile_forecast, direction, change_pct, verified, actual_prices, "
+            "direction_correct, mae "
+            "FROM chronos_predictions ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+
+        predictions = []
+        for row in rows:
+            predictions.append({
+                "id": row[0],
+                "created_at": row[1],
+                "symbol": row[2],
+                "timeframe": row[3],
+                "current_price": row[4],
+                "point_forecast": _json.loads(row[5]),
+                "quantile_forecast": _json.loads(row[6]),
+                "direction": row[7],
+                "change_pct": row[8],
+                "verified": bool(row[9]),
+                "actual_prices": _json.loads(row[10]) if row[10] else None,
+                "direction_correct": row[11],
+                "mae": row[12],
+            })
+
+        return web.json_response({"predictions": predictions})
+    except Exception as e:
+        log.error(f"Chronos API error: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def _market_handler(request: web.Request) -> web.Response:
+    """Return market data (OHLCV + ticker + indicators) for a pair."""
+    if not _check_auth(request):
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        # Convert pair from URL format (BTC-USDT) to ccxt format (BTC/USDT)
+        pair_param = request.match_info.get("pair", "BTC-USDT")
+        pair = pair_param.replace("-", "/")
+        timeframe = request.match_info.get("timeframe", "1h")
+
+        from bot.market import get_ohlcv, get_ticker, get_indicators
+
+        ohlcv, ticker, indicators = await asyncio.gather(
+            get_ohlcv(pair, timeframe),
+            get_ticker(pair),
+            get_indicators(pair, timeframe),
+        )
+
+        return web.json_response({
+            "pair": pair,
+            "timeframe": timeframe,
+            "ohlcv": ohlcv,
+            "ticker": ticker,
+            "indicators": indicators,
+        })
+    except Exception as e:
+        log.error(f"Market API error: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def _portfolio_handler(request: web.Request) -> web.Response:
+    """Return portfolio balance, positions, P&L, and risk status."""
+    if not _check_auth(request):
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        from bot.trading import get_balance, get_positions, get_daily_pnl, get_risk_status, get_mode
+
+        balance = get_balance()
+        positions = get_positions()
+        daily_pnl = get_daily_pnl()
+        risk = get_risk_status()
+        mode = get_mode()
+
+        return web.json_response({
+            "mode": mode,
+            "balance_usd": balance.get("balance_usd"),
+            "initial_balance": balance.get("initial_balance"),
+            "positions": positions,
+            "daily_pnl": daily_pnl,
+            "risk": risk,
+        })
+    except Exception as e:
+        log.error(f"Portfolio API error: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def _trades_handler(request: web.Request) -> web.Response:
+    """Return trade history."""
+    if not _check_auth(request):
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        limit = int(request.query.get("limit", "20"))
+        limit = min(max(limit, 1), 100)  # clamp to 1-100
+
+        from bot.trading import get_trade_history
+        trades = get_trade_history(limit)
+
+        return web.json_response({"trades": trades})
+    except Exception as e:
+        log.error(f"Trades API error: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ── Static files ──────────────────────────────────────────────────────
 
 async def _index_handler(request: web.Request) -> web.FileResponse:
@@ -316,17 +433,39 @@ async def _index_handler(request: web.Request) -> web.FileResponse:
 
 # ── Server startup ────────────────────────────────────────────────────
 
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    """Add CORS headers for cross-origin requests from dev server."""
+    # Handle OPTIONS preflight
+    if request.method == "OPTIONS":
+        response = web.Response()
+    else:
+        response = await handler(request)
+
+    # Add CORS headers
+    response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    return response
+
+
 async def start_server() -> None:
     """Start the dashboard HTTP + WebSocket server."""
     global _auth_token
     _auth_token = _generate_auth_token()
 
-    app = web.Application()
+    app = web.Application(middlewares=[cors_middleware])
 
     # API routes
     app.router.add_post("/api/auth", _auth_handler)
     app.router.add_get("/api/auth/check", _check_auth_handler)
     app.router.add_get("/api/kronos", _kronos_handler)
+    app.router.add_get("/api/chronos", _chronos_pred_handler)
+    app.router.add_get("/api/market/{pair}/{timeframe}", _market_handler)
+    app.router.add_get("/api/portfolio", _portfolio_handler)
+    app.router.add_get("/api/trades", _trades_handler)
     app.router.add_get(WS_PATH, _ws_handler)
 
     # Static dashboard files
