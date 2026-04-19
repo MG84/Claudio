@@ -30,6 +30,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - `bot/trading.py` — Execution layer: paper + live trading via ccxt, risk manager hard-coded, trade journal SQLite
 - `bot/scanner.py` — Market scanner (hourly) + risk monitor (every 5 min), background loops
 - `scripts/entrypoint.sh` — Startup container
+- `scripts/deploy_dashboard.sh` — Deploy script: build claudio-monitor, copy to dashboard/, rebuild Docker
 - `docker-compose.yml` — Configurazione Docker (servizi: assistant, ollama, qdrant, tunnel)
 - `Dockerfile` — Immagine Ubuntu 24.04, Node.js 22, ffmpeg
 - `tests/test_git_ops.py` — Test per diff parsing e operazioni git (37 test)
@@ -48,7 +49,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Dashboard locale su porta 3333 (servita dal bot via aiohttp)
 - Eventi inviati via WebSocket diretto (/ws) — zero servizi cloud
 - Cloudflare Tunnel per accesso remoto (URL nei log di claudio-tunnel)
-- Tipi evento: message_received, query_start, tool_use, query_end, cost, stt_start, stt_end, tts_end, metrics, status, error, changes, kronos_prediction, chronos_prediction, market_scan, portfolio_update, risk_alert
+- Tipi evento: message_received, query_start, tool_use, query_end, cost, stt_start, stt_end, tts_end, metrics, status, error, changes, kronos_prediction, chronos_prediction, market_scan, portfolio_update, risk_alert, trade_executed
 - Metriche sistema pubblicate ogni 5 secondi
 - Storico eventi in SQLite: /home/assistant/memory/monitor.db (retention 7 giorni)
 - Al connect WebSocket, il server invia gli ultimi 100 eventi dalla SQLite + lo stato git di tutti i progetti
@@ -56,6 +57,16 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Frontend: WebSocket si connette solo dopo autenticazione (`enabled` flag in `useWebSocket`), no retry se non autenticato
 - Frontend: `useWebSocket` usa refs per callback (`onMessageRef`, `onHistoryRef`) così `connect` è stabile e non causa riconnessioni spurie
 - Repo sorgente dashboard: github.com/MG84/claudio-monitor
+
+### REST API Endpoints
+- `GET /api/market/{pair}/{timeframe}` — OHLCV candles, ticker, and technical indicators (pair format: BTC-USDT)
+- `GET /api/portfolio` — balance, positions, daily P&L, risk status
+- `GET /api/trades?limit=N` — trade history with reasoning (default 20, max 100)
+- `GET /api/kronos` — Kronos prediction history
+- `GET /api/chronos` — Chronos-Bolt prediction history
+- Tutti gli endpoint richiedono autenticazione (cookie session token)
+- CORS abilitato per localhost:3000 (Next.js dev server)
+- Auth token deterministico (stabile tra restart), calcolato via SHA-256 da password
 
 ## Changes tab (Code Review)
 - Tab "Changes" nella dashboard per review dei diff — stile Fork (Git GUI)
