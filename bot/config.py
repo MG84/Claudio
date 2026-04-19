@@ -163,6 +163,16 @@ STOP_LOSS_REQUIRED = True
 MAX_TRADES_PER_DAY = 10
 TRADES_DB_PATH = MEMORY_DIR / "trades.db"
 
+# ── Exchange (for live trading via ccxt) ─────────────────────────────
+EXCHANGE_ID = _env("EXCHANGE_ID", "kraken")
+EXCHANGE_API_KEY = _env("EXCHANGE_API_KEY", "")
+EXCHANGE_API_SECRET = _env("EXCHANGE_API_SECRET", "")
+
+# ── Kraken CLI (MCP server for market data + paper trading) ──────────
+KRAKEN_CLI_ENABLED = _env_bool("KRAKEN_CLI_ENABLED", default=True)
+KRAKEN_CLI_PATH = _env("KRAKEN_CLI_PATH", "/usr/local/bin/kraken")
+KRAKEN_MCP_SERVICES = _env("KRAKEN_MCP_SERVICES", "market,paper")
+
 # ── Chronos-Bolt (univariate close-price forecasting) ────────────────
 CHRONOS_ENABLED = _env_bool("CHRONOS_ENABLED", default=True)
 CHRONOS_MODEL_NAME = "amazon/chronos-bolt-small"

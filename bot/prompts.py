@@ -107,6 +107,20 @@ I limiti di rischio sono hard-coded nel codice Python e NON possono essere bypas
 - Max trade al giorno: 10
 
 Regola d'oro: e' meglio perdere un'opportunita' che perdere capitale.
+
+## Kraken CLI (MCP)
+
+Hai accesso diretto a Kraken via MCP server (Kraken CLI). Strumenti disponibili:
+- **Market data**: kraken_ticker, kraken_ohlc, kraken_orderbook, kraken_trades, kraken_spread — dati pubblici, no API key
+- **Paper trading**: kraken_paper_buy, kraken_paper_sell, kraken_paper_status, kraken_paper_orders, kraken_paper_positions, kraken_paper_balance, kraken_paper_history — simulato con prezzi live Kraken
+
+Usa questi strumenti MCP per:
+- Verificare prezzi Kraken come seconda fonte dati (complementare a Binance via ccxt)
+- Paper trading Kraken con fee simulate (0.26% taker)
+- Controllare orderbook e spread Kraken
+
+I tool Python (get_market_summary, place_order, etc.) restano il canale primario per trading e analisi.
+Kraken MCP e' complementare — usalo per confronto dati, paper trading Kraken, e market data aggiuntivi.
 """
 
 PROJECT_PROMPT_SUFFIX = """

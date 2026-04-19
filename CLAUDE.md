@@ -27,7 +27,7 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - `bot/market.py` — Market data aggregator: OHLCV, ticker, orderbook, indicatori tecnici (RSI, EMA, MACD, Bollinger, ATR) via ccxt + pandas-ta
 - `bot/chronos_predictor.py` — Chronos-Bolt: univariate close-price forecasting con bande di incertezza (quantili)
 - `bot/kronos.py` — Kronos advisor: model loading, OHLCV fetch, inference, SQLite, verifica, loop periodico, multi-pair, confidence scoring
-- `bot/trading.py` — Execution layer: paper trading, risk manager hard-coded, trade journal SQLite
+- `bot/trading.py` — Execution layer: paper + live trading via ccxt, risk manager hard-coded, trade journal SQLite
 - `bot/scanner.py` — Market scanner (hourly) + risk monitor (every 5 min), background loops
 - `scripts/entrypoint.sh` — Startup container
 - `docker-compose.yml` — Configurazione Docker (servizi: assistant, ollama, qdrant, tunnel)
@@ -122,7 +122,10 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Zero rischio finanziario — solo osservazione e tracking
 
 ## Chronos-Bolt (univariate forecasting)
-- Secondo segnale previsionale accanto a Kronos, basato su amazon/chronos-bolt-small (ChronosPipeline)
+- Secondo segnale previsionale accanto a Kronos, basato su amazon/chronos-bolt-small (ChronosBoltPipeline)
+- IMPORTANTE: usa `ChronosBoltPipeline` (NON `ChronosPipeline`) — classe dedicata per modelli Bolt in chronos-forecasting>=2.2.0
+- `from_pretrained` usa `dtype=torch.float32` (NON `torch_dtype`, deprecato)
+- Il predict ritorna tensor (batch, 9, horizon) con 9 quantili fissi [0.1..0.9] — q10=indice 0, q50=indice 4, q90=indice 8
 - Input: close prices (ultimi 400 candles via `bot/market.py` `get_ohlcv()`)
 - Output: quantile forecasts (q10, q50, q90) per bande di incertezza + direzione + change%
 - Previsione: 12 candele avanti (12h con timeframe 1h), inference CPU via `asyncio.to_thread()`
@@ -136,7 +139,11 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - Se Kronos e Chronos-Bolt concordano sulla direzione → maggiore confidenza; se discordano → cautela
 
 ## Trading (execution layer)
-- Paper trading simulato localmente in SQLite (`/home/assistant/memory/trades.db`)
+- Due modalita': **paper** (simulato in SQLite) e **live** (ordini reali via ccxt)
+- Paper: simulato localmente in SQLite (`/home/assistant/memory/trades.db`)
+- Live: ordini reali sull'exchange via `ccxt.async_support` (richiede `EXCHANGE_API_KEY` + `EXCHANGE_API_SECRET`)
+- Exchange singleton: `_get_live_exchange()` crea istanza ccxt con API key, `enableRateLimit=True`
+- `set_mode("live")` valida che le API key siano configurate prima di attivare
 - Limiti di rischio hard-coded in Python (NON nel prompt, NON bypassabili):
   - Max posizione: 20% del portfolio (`MAX_POSITION_PCT`)
   - Max posizioni aperte: 3 (`MAX_OPEN_POSITIONS`)
@@ -144,12 +151,15 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
   - Max drawdown: 15% (`MAX_DRAWDOWN_PCT`) → kill switch automatico
   - Stop-loss obbligatorio (`STOP_LOSS_REQUIRED`)
   - Max trade al giorno: 10 (`MAX_TRADES_PER_DAY`)
-- `risk_check()` eseguito PRIMA di ogni trade, non bypassabile
+- `risk_check()` eseguito PRIMA di ogni trade in ENTRAMBE le modalita', non bypassabile
 - Funzioni: `place_order()`, `close_position()`, `cancel_order()`, `emergency_close_all()`
+- `place_order()`: paper simula in SQLite, live invia `create_order()` via ccxt + log in SQLite
+- `close_position()`: paper aggiorna balance, live invia ordine market inverso via ccxt
+- `emergency_close_all()`: chiude tutte le posizioni aperte (paper o live)
 - Portfolio: `get_balance()`, `get_positions()`, `get_trade_history()`, `get_daily_pnl()`, `get_risk_status()`
-- Mode: `paper` (default) / `live` (placeholder, richiede conferma esplicita)
-- Trade journal: ogni trade salvato con timestamp, parametri, esito, reasoning di Claude
-- Config: `bot/config.py` (costanti `TRADING_*`, `MAX_*`), disabilitabile con `TRADING_ENABLED=false`
+- Trade journal: ogni trade salvato con timestamp, parametri, esito, reasoning di Claude, mode (paper/live)
+- Config: `bot/config.py` (costanti `TRADING_*`, `MAX_*`, `EXCHANGE_*`), disabilitabile con `TRADING_ENABLED=false`
+- Exchange config: `EXCHANGE_ID` (default kraken), `EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`
 - File: `bot/trading.py`
 
 ## Trading Commands (Telegram)
@@ -164,7 +174,10 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
 - File: `bot/handlers/trading_cmds.py`
 
 ## Market Scanner + Risk Monitor
-- Market scanner loop (ogni ora): assembla contesto completo (indicatori, Kronos, Chronos, portfolio) e invia brief su Telegram
+- Market scanner loop (ogni ora): assembla contesto completo (indicatori, Kronos, Chronos, portfolio)
+- Due modalita' operative:
+  - **Autonomous** (`/autonomous on`): scanner invia il brief a Claude via `bridge.query()`, Claude analizza e decide se fare trade con `place_order()` o HOLD. Risposta inviata su Telegram.
+  - **Supervised** (default): scanner invia il brief direttamente su Telegram per review umana
 - Concordanza segnali: se Kronos e Chronos concordano → segnalato, se discordano → cautela
 - Risk monitor loop (ogni 5 min): controlla limiti di rischio
   - Drawdown >= 15% → `emergency_close_all()` + disabilita autonomous
@@ -181,6 +194,22 @@ Bot Telegram che usa Claude Agent SDK per fornire un assistente personale AI via
   - **Risk Manager**: mai >2% per trade, sempre stop-loss, HOLD e' valido
 - Lista strumenti disponibili e limiti hard-coded nel prompt
 - Regola d'oro: meglio perdere un'opportunita' che perdere capitale
+
+## Kraken CLI MCP (market data + paper trading)
+- Kraken CLI v0.3.1 binary ARM64 installato nel Dockerfile in `/usr/local/bin/kraken`
+- MCP server nativo: `kraken mcp -s market,paper` — comunicazione via stdio con Claude Agent SDK
+- Servizi MCP abilitati di default: `market` (dati pubblici) + `paper` (paper trading spot)
+- Market data: ticker, OHLC, orderbook, trades, spread — dati pubblici Kraken, no API key
+- Paper trading: buy/sell con prezzi live Kraken, fee simulate 0.26% taker, persistenza locale
+- Configurazione MCP in `bot/claude_bridge.py`: `mcp_servers` dict passato a `ClaudeAgentOptions`
+- Se `KRAKEN_API_KEY` e `KRAKEN_API_SECRET` sono configurati, vengono passati come env al processo MCP
+- Servizi configurabili via `KRAKEN_MCP_SERVICES` (default: `market,paper`); per account info: `market,account,paper`
+- Config: `bot/config.py` (costanti `KRAKEN_CLI_*`), disabilitabile con `KRAKEN_CLI_ENABLED=false`
+- Prompt: sezione "Kraken CLI (MCP)" in `TRADING_PROMPT` (`bot/prompts.py`)
+- Ruolo: complementare a ccxt — ccxt resta layer primario per indicatori, previsioni ML, risk management
+- Analisi decisionale: `docs/TRADING_TOURNAMENT.md` (tournament theory, 6 contendenti, verdetto ibrido)
+- Analisi tecnica: `docs/KRAKEN_CLI_ANALYSIS.md` (151 comandi, MCP server, paper trading, limitazioni)
+- Docker: env vars `KRAKEN_CLI_ENABLED`, `KRAKEN_API_KEY`, `KRAKEN_API_SECRET` in docker-compose.yml
 
 ## Gestione voci clonate
 - Registro in `/home/assistant/memory/voices/voices.json`

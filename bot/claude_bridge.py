@@ -6,6 +6,7 @@ Manages persistent sessions per chat and per project, with concurrency safety.
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from bot.config import (
     GENERAL_SESSION_KEY, NO_OUTPUT_MESSAGE,
     DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_MAX_TURNS,
     MEMORY_DIR,
+    KRAKEN_CLI_ENABLED, KRAKEN_CLI_PATH, KRAKEN_MCP_SERVICES,
     get_runtime,
 )
 from bot.prompts import BASE_PROMPT, PROJECT_PROMPT_SUFFIX, MEMORY_SECTION, TRADING_PROMPT
@@ -230,6 +232,24 @@ class ClaudeBridge:
             key[0], prompt, project_name, project_path,
         )
 
+        mcp_servers = {}
+        if KRAKEN_CLI_ENABLED:
+            env = {}
+            kraken_api_key = os.environ.get("KRAKEN_API_KEY", "")
+            kraken_api_secret = os.environ.get("KRAKEN_API_SECRET", "")
+            if kraken_api_key:
+                env["KRAKEN_API_KEY"] = kraken_api_key
+            if kraken_api_secret:
+                env["KRAKEN_API_SECRET"] = kraken_api_secret
+            server_cfg = {
+                "type": "stdio",
+                "command": KRAKEN_CLI_PATH,
+                "args": ["mcp", "-s", KRAKEN_MCP_SERVICES],
+            }
+            if env:
+                server_cfg["env"] = env
+            mcp_servers["kraken"] = server_cfg
+
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
             permission_mode=PERMISSION_MODE,
@@ -238,6 +258,7 @@ class ClaudeBridge:
             cwd=cwd,
             max_turns=max_turns,
             effort=effort,
+            mcp_servers=mcp_servers,
         )
 
         if session.session_id:
