@@ -72,12 +72,12 @@ def _load_model():
     if _pipeline is not None:
         return
 
-    from chronos import ChronosPipeline
+    from chronos import ChronosBoltPipeline
 
-    _pipeline = ChronosPipeline.from_pretrained(
+    _pipeline = ChronosBoltPipeline.from_pretrained(
         CHRONOS_MODEL_NAME,
         device_map="cpu",
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
     log.info(f"Chronos-Bolt model loaded: {CHRONOS_MODEL_NAME} (CPU)")
 
@@ -106,19 +106,17 @@ def _run_inference(closes: list[float], horizon: int) -> dict:
         raise RuntimeError("Chronos-Bolt model not loaded")
 
     context = torch.tensor(closes, dtype=torch.float32)
-    # predict returns (forecast, quantile_levels) where forecast shape is
-    # (batch, num_quantiles, prediction_length)
-    quantile_levels = [0.1, 0.5, 0.9]
-    forecast, _ = _pipeline.predict(
+    # ChronosBoltPipeline.predict returns tensor of shape
+    # (batch, 9, prediction_length) with fixed quantiles [0.1, 0.2, ..., 0.9]
+    forecast = _pipeline.predict(
         context,
         prediction_length=horizon,
-        quantile_levels=quantile_levels,
     )
 
-    # forecast shape: (1, 3, horizon) -- squeeze batch dim
+    # Extract q10 (index 0), q50 (index 4), q90 (index 8)
     q10 = forecast[0, 0].tolist()
-    q50 = forecast[0, 1].tolist()
-    q90 = forecast[0, 2].tolist()
+    q50 = forecast[0, 4].tolist()
+    q90 = forecast[0, 8].tolist()
 
     current = closes[-1]
     final_pred = q50[-1]

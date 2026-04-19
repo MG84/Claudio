@@ -3,7 +3,7 @@ Trading execution layer with hard-coded risk limits.
 Safety principle: limits in CODE, not in prompt.
 
 Paper mode: simulated locally in SQLite (default).
-Live mode: requires explicit activation + Kraken API (future).
+Live mode: real orders via ccxt (requires EXCHANGE_API_KEY + EXCHANGE_API_SECRET).
 
 Architecture:
     Claude says: "buy 50% of portfolio"
@@ -19,11 +19,14 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
+import ccxt.async_support as ccxt_async
+
 from bot.config import (
     TRADING_ENABLED, TRADING_MODE,
     MAX_POSITION_PCT, MAX_OPEN_POSITIONS, MAX_DAILY_LOSS_PCT,
     MAX_DRAWDOWN_PCT, STOP_LOSS_REQUIRED, MAX_TRADES_PER_DAY,
     TRADES_DB_PATH, MEMORY_DIR,
+    EXCHANGE_ID, EXCHANGE_API_KEY, EXCHANGE_API_SECRET,
 )
 
 log = logging.getLogger("claudio.trading")
@@ -32,6 +35,26 @@ _db: sqlite3.Connection | None = None
 _mode: str = TRADING_MODE
 _autonomous: bool = False
 _INITIAL_BALANCE: float = 10_000.0
+_live_exchange: ccxt_async.Exchange | None = None
+
+
+def _get_live_exchange() -> ccxt_async.Exchange:
+    """Get or create the exchange instance for live trading."""
+    global _live_exchange
+    if _live_exchange is not None:
+        return _live_exchange
+    if not EXCHANGE_API_KEY or not EXCHANGE_API_SECRET:
+        raise RuntimeError("EXCHANGE_API_KEY e EXCHANGE_API_SECRET necessarie per live trading")
+    exchange_class = getattr(ccxt_async, EXCHANGE_ID, None)
+    if exchange_class is None:
+        raise RuntimeError(f"Exchange '{EXCHANGE_ID}' non supportato da ccxt")
+    _live_exchange = exchange_class({
+        "apiKey": EXCHANGE_API_KEY,
+        "secret": EXCHANGE_API_SECRET,
+        "enableRateLimit": True,
+    })
+    log.info(f"Live exchange initialized: {EXCHANGE_ID}")
+    return _live_exchange
 
 
 # ── SQLite ────────────────────────────────────────────────────────────
@@ -110,6 +133,8 @@ def set_mode(mode: str) -> str:
     global _mode
     if mode not in ("paper", "live"):
         return f"Modalita' non valida: {mode}. Usa 'paper' o 'live'."
+    if mode == "live" and (not EXCHANGE_API_KEY or not EXCHANGE_API_SECRET):
+        return "Impossibile attivare live: EXCHANGE_API_KEY e EXCHANGE_API_SECRET non configurate."
     _mode = mode
     log.info(f"Trading mode: {mode}")
     return f"Modalita' trading: {mode}"
@@ -207,7 +232,7 @@ async def place_order(side: str, pair: str, order_type: str, volume: float,
     """Execute a trade: risk_check → log → execute → log result.
 
     Paper mode: simulated in SQLite.
-    Live mode: not yet implemented (returns error).
+    Live mode: real orders via ccxt exchange.
     """
     if not TRADING_ENABLED:
         return {"ok": False, "error": "Trading non abilitato"}
@@ -227,14 +252,44 @@ async def place_order(side: str, pair: str, order_type: str, volume: float,
         log.warning(f"Trade rejected: {check['reason']}")
         return {"ok": False, "error": check["reason"]}
 
-    if _mode == "live":
-        return {"ok": False, "error": "Live trading non ancora implementato. Usa 'paper'."}
-
-    # Paper mode — simulate locally
     db = _get_db()
     now = datetime.now(timezone.utc).isoformat()
     position_cost = volume * price
 
+    # ── Live mode — real orders via ccxt ──────────────────────────────
+    if _mode == "live":
+        try:
+            exchange = _get_live_exchange()
+            params = {}
+            if stop_loss:
+                params["stopLoss"] = {"triggerPrice": stop_loss}
+            if take_profit:
+                params["takeProfit"] = {"triggerPrice": take_profit}
+            order = await exchange.create_order(
+                symbol=pair, type=order_type, side=side,
+                amount=volume, price=price if order_type == "limit" else None,
+                params=params if params else None,
+            )
+            exchange_order_id = order.get("id", "unknown")
+            fill_price = order.get("average") or order.get("price") or price
+            log.info(f"LIVE trade: {side} {volume} {pair} @ ${fill_price:,.2f} (order {exchange_order_id})")
+        except Exception as e:
+            log.error(f"Live order failed: {e}")
+            return {"ok": False, "error": f"Exchange error: {e}"}
+
+        # Log to SQLite for tracking
+        cursor = db.execute(
+            "INSERT INTO trades "
+            "(created_at, pair, side, type, volume, price, stop_loss, take_profit, status, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 'live')",
+            (now, pair, side, order_type, volume, fill_price, stop_loss, take_profit),
+        )
+        trade_id = cursor.lastrowid
+        db.commit()
+        return {"ok": True, "trade_id": trade_id, "mode": "live", "price": fill_price,
+                "exchange_order_id": exchange_order_id}
+
+    # ── Paper mode — simulate locally ────────────────────────────────
     if side == "buy":
         balance = _get_balance_usd(db)
         if position_cost > balance:
@@ -250,8 +305,8 @@ async def place_order(side: str, pair: str, order_type: str, volume: float,
     cursor = db.execute(
         "INSERT INTO trades "
         "(created_at, pair, side, type, volume, price, stop_loss, take_profit, status, mode) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)",
-        (now, pair, side, order_type, volume, price, stop_loss, take_profit, _mode),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 'paper')",
+        (now, pair, side, order_type, volume, price, stop_loss, take_profit),
     )
     trade_id = cursor.lastrowid
     db.commit()
@@ -261,20 +316,59 @@ async def place_order(side: str, pair: str, order_type: str, volume: float,
 
 
 async def close_position(trade_id: int, close_price: float | None = None) -> dict:
-    """Close an open position and realize P&L."""
+    """Close an open position and realize P&L.
+
+    Paper mode: update SQLite balance.
+    Live mode: sell on exchange via ccxt, then log to SQLite.
+    """
     db = _get_db()
     row = db.execute(
-        "SELECT pair, side, volume, price, status FROM trades WHERE id = ?",
+        "SELECT pair, side, volume, price, status, mode FROM trades WHERE id = ?",
         (trade_id,),
     ).fetchone()
 
     if not row:
         return {"ok": False, "error": f"Trade #{trade_id} non trovato"}
 
-    pair, side, volume, entry_price, status = row
+    pair, side, volume, entry_price, status, trade_mode = row
     if status != "open":
         return {"ok": False, "error": f"Trade #{trade_id} gia' chiuso"}
 
+    # ── Live mode — close on exchange ─────────────────────────────────
+    if trade_mode == "live":
+        try:
+            exchange = _get_live_exchange()
+            close_side = "sell" if side == "buy" else "buy"
+            order = await exchange.create_order(
+                symbol=pair, type="market", side=close_side, amount=volume,
+            )
+            close_price = order.get("average") or order.get("price")
+            if close_price is None:
+                from bot.market import get_ticker
+                ticker = await get_ticker(pair)
+                close_price = ticker["last"]
+            log.info(f"LIVE close trade #{trade_id}: {close_side} {volume} {pair} @ ${close_price:,.2f}")
+        except Exception as e:
+            log.error(f"Live close failed for trade #{trade_id}: {e}")
+            return {"ok": False, "error": f"Exchange error: {e}"}
+
+        # P&L calculation
+        if side == "buy":
+            pnl = (close_price - entry_price) * volume
+        else:
+            pnl = (entry_price - close_price) * volume
+
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute(
+            "UPDATE trades SET status = 'closed', close_price = ?, closed_at = ?, pnl_usd = ? "
+            "WHERE id = ?",
+            (close_price, now, round(pnl, 2), trade_id),
+        )
+        db.commit()
+        log.info(f"Closed live trade #{trade_id}: P&L ${pnl:,.2f}")
+        return {"ok": True, "trade_id": trade_id, "pnl_usd": round(pnl, 2), "mode": "live"}
+
+    # ── Paper mode — simulate locally ─────────────────────────────────
     if close_price is None:
         from bot.market import get_ticker
         try:
@@ -304,25 +398,36 @@ async def close_position(trade_id: int, close_price: float | None = None) -> dic
     db.commit()
 
     log.info(f"Closed trade #{trade_id}: P&L ${pnl:,.2f}")
-    return {"ok": True, "trade_id": trade_id, "pnl_usd": round(pnl, 2)}
+    return {"ok": True, "trade_id": trade_id, "pnl_usd": round(pnl, 2), "mode": "paper"}
 
 
 async def cancel_order(trade_id: int) -> dict:
-    """Cancel an open order and return funds."""
+    """Cancel an open order and return funds.
+
+    Paper mode: refund balance in SQLite.
+    Live mode: cancel on exchange via ccxt, then update SQLite.
+    """
     db = _get_db()
     row = db.execute(
-        "SELECT side, volume, price, status FROM trades WHERE id = ?",
+        "SELECT side, volume, price, status, mode FROM trades WHERE id = ?",
         (trade_id,),
     ).fetchone()
 
     if not row:
         return {"ok": False, "error": f"Trade #{trade_id} non trovato"}
 
-    side, volume, price, status = row
+    side, volume, price, status, trade_mode = row
     if status != "open":
         return {"ok": False, "error": f"Trade #{trade_id} non e' aperto"}
 
     now = datetime.now(timezone.utc).isoformat()
+
+    # Live mode — note: ccxt cancel requires exchange order ID, which we don't store yet.
+    # For now, just close the position via market order (same as close_position).
+    if trade_mode == "live":
+        return await close_position(trade_id)
+
+    # Paper mode — refund balance
     if side == "buy":
         db.execute(
             "UPDATE portfolio SET balance_usd = balance_usd + ?, updated_at = ? WHERE id = 1",

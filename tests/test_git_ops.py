@@ -11,6 +11,7 @@ import pytest
 from bot.git_ops import (
     parse_unified_diff,
     get_project_diff,
+    get_all_projects_changes,
     stage_file,
     unstage_file,
     revert_file,
@@ -215,6 +216,8 @@ class TestGetProjectDiff:
     @pytest.mark.asyncio
     async def test_with_unstaged_changes(self):
         async def fake_run_git(pp, *args):
+            if "ls-files" in args:
+                return ("", "", 0)
             if "--cached" not in args:
                 return (SAMPLE_MODIFIED, "", 0)
             return ("", "", 0)
@@ -230,6 +233,8 @@ class TestGetProjectDiff:
     @pytest.mark.asyncio
     async def test_with_staged_changes(self):
         async def fake_run_git(pp, *args):
+            if "ls-files" in args:
+                return ("", "", 0)
             if "--cached" in args:
                 return (SAMPLE_NEW_FILE, "", 0)
             return ("", "", 0)
@@ -243,6 +248,8 @@ class TestGetProjectDiff:
     @pytest.mark.asyncio
     async def test_mixed_staged_unstaged(self):
         async def fake_run_git(pp, *args):
+            if "ls-files" in args:
+                return ("", "", 0)
             if "--cached" in args:
                 return (SAMPLE_NEW_FILE, "", 0)
             return (SAMPLE_MODIFIED, "", 0)
@@ -255,6 +262,44 @@ class TestGetProjectDiff:
             staged = [f for f in result["files"] if f["staged"]]
             assert len(unstaged) == 1
             assert len(staged) == 1
+
+    @pytest.mark.asyncio
+    async def test_untracked_files(self):
+        async def fake_run_git(pp, *args):
+            if "ls-files" in args:
+                return ("new-file.ts\nsrc/other.ts\n", "", 0)
+            return ("", "", 0)
+
+        with patch("bot.git_ops._run_git", side_effect=fake_run_git):
+            result = await get_project_diff("/home/assistant/projects/test-proj")
+            assert result is not None
+            assert result["summary"]["files"] == 2
+            for f in result["files"]:
+                assert f["status"] == "untracked"
+                assert f["staged"] is False
+                assert f["hunks"] == []
+                assert f["insertions"] == 0
+                assert f["deletions"] == 0
+            paths = [f["path"] for f in result["files"]]
+            assert "new-file.ts" in paths
+            assert "src/other.ts" in paths
+
+    @pytest.mark.asyncio
+    async def test_mixed_diff_and_untracked(self):
+        async def fake_run_git(pp, *args):
+            if "ls-files" in args:
+                return ("brand-new.ts\n", "", 0)
+            if "--cached" not in args:
+                return (SAMPLE_MODIFIED, "", 0)
+            return ("", "", 0)
+
+        with patch("bot.git_ops._run_git", side_effect=fake_run_git):
+            result = await get_project_diff("/home/assistant/projects/test-proj")
+            assert result is not None
+            assert result["summary"]["files"] == 2
+            statuses = {f["status"] for f in result["files"]}
+            assert "modified" in statuses
+            assert "untracked" in statuses
 
     @pytest.mark.asyncio
     async def test_invalid_path_raises(self):
@@ -373,3 +418,73 @@ class TestValidateFilePath:
 
     def test_accepts_nested_path(self):
         assert validate_file_path("a/b/c/d.txt") == "a/b/c/d.txt"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# get_all_projects_changes — Mocked discover_projects + get_project_diff
+# ══════════════════════════════════════════════════════════════════════
+
+class TestGetAllProjectsChanges:
+    @pytest.mark.asyncio
+    async def test_returns_projects_with_changes(self):
+        from bot.projects import ProjectInfo
+
+        projects = [
+            ProjectInfo(name="proj-a", path="/home/assistant/projects/proj-a", has_claude_md=True, has_git=True),
+            ProjectInfo(name="proj-b", path="/home/assistant/projects/proj-b", has_claude_md=False, has_git=True),
+        ]
+        diff_a = {"project": "proj-a", "summary": {"files": 1, "insertions": 5, "deletions": 0}, "files": []}
+        diff_b = {"project": "proj-b", "summary": {"files": 2, "insertions": 3, "deletions": 1}, "files": []}
+
+        with patch("bot.projects.discover_projects", return_value=projects), \
+             patch("bot.git_ops.get_project_diff", new_callable=AsyncMock) as mock_diff:
+            mock_diff.side_effect = [diff_a, diff_b]
+            results = await get_all_projects_changes()
+            assert len(results) == 2
+            assert results[0]["project"] == "proj-a"
+            assert results[1]["project"] == "proj-b"
+
+    @pytest.mark.asyncio
+    async def test_skips_non_git_projects(self):
+        from bot.projects import ProjectInfo
+
+        projects = [
+            ProjectInfo(name="no-git", path="/home/assistant/projects/no-git", has_claude_md=True, has_git=False),
+            ProjectInfo(name="has-git", path="/home/assistant/projects/has-git", has_claude_md=True, has_git=True),
+        ]
+        diff = {"project": "has-git", "summary": {"files": 1, "insertions": 1, "deletions": 0}, "files": []}
+
+        with patch("bot.projects.discover_projects", return_value=projects), \
+             patch("bot.git_ops.get_project_diff", new_callable=AsyncMock, return_value=diff):
+            results = await get_all_projects_changes()
+            assert len(results) == 1
+            assert results[0]["project"] == "has-git"
+
+    @pytest.mark.asyncio
+    async def test_skips_clean_projects(self):
+        from bot.projects import ProjectInfo
+
+        projects = [
+            ProjectInfo(name="clean", path="/home/assistant/projects/clean", has_claude_md=True, has_git=True),
+        ]
+
+        with patch("bot.projects.discover_projects", return_value=projects), \
+             patch("bot.git_ops.get_project_diff", new_callable=AsyncMock, return_value=None):
+            results = await get_all_projects_changes()
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_broken_projects(self):
+        from bot.projects import ProjectInfo
+
+        projects = [
+            ProjectInfo(name="broken", path="/home/assistant/projects/broken", has_claude_md=True, has_git=True),
+            ProjectInfo(name="ok", path="/home/assistant/projects/ok", has_claude_md=True, has_git=True),
+        ]
+        diff = {"project": "ok", "summary": {"files": 1, "insertions": 1, "deletions": 0}, "files": []}
+
+        with patch("bot.projects.discover_projects", return_value=projects), \
+             patch("bot.git_ops.get_project_diff", new_callable=AsyncMock, side_effect=[Exception("broken"), diff]):
+            results = await get_all_projects_changes()
+            assert len(results) == 1
+            assert results[0]["project"] == "ok"

@@ -24,6 +24,7 @@ log = logging.getLogger("claudio.ws")
 
 _clients: weakref.WeakSet[web.WebSocketResponse] = weakref.WeakSet()
 _auth_token: str = ""
+MAX_WS_CLIENTS = 20
 
 
 def _generate_auth_token() -> str:
@@ -55,7 +56,7 @@ async def broadcast(event_type: str, data: dict) -> None:
     message = json.dumps({"name": event_type, "data": data}, default=str)
     dead: list[web.WebSocketResponse] = []
 
-    for ws in _clients:
+    for ws in list(_clients):
         try:
             await ws.send_str(message)
         except (ConnectionError, RuntimeError):
@@ -70,18 +71,28 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     if not _check_auth(request):
         return web.Response(status=401, text="Unauthorized")
 
-    ws = web.WebSocketResponse()
+    if len(_clients) >= MAX_WS_CLIENTS:
+        return web.Response(status=503, text="Too many connections")
+
+    ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
     _clients.add(ws)
     log.info(f"Dashboard connected ({len(_clients)} clients)")
 
-    # Send history on connect
+    # Send history + changes on connect; abort if client already gone
     try:
         from bot.monitor import get_history
         history = get_history(limit=HISTORY_ON_CONNECT_LIMIT)
         await ws.send_str(json.dumps({"name": "history", "data": history}, default=str))
+
+        from bot.git_ops import get_all_projects_changes
+        all_changes = await get_all_projects_changes()
+        for changes in all_changes:
+            await ws.send_str(json.dumps({"name": CHANGES_EVENT, "data": changes}, default=str))
     except Exception as e:
-        log.error(f"Failed to send history: {e}")
+        log.error(f"Failed to send initial data: {e}")
+        _clients.discard(ws)
+        return ws
 
     try:
         async for msg in ws:
@@ -112,6 +123,9 @@ async def _handle_ws_message(raw: str) -> None:
             command = data.get("command", "")
             if command:
                 asyncio.create_task(_execute_command(command))
+
+        elif action == "git_refresh_all":
+            asyncio.create_task(_refresh_all_changes())
 
         elif action in GIT_ACTIONS:
             asyncio.create_task(_execute_git_action(action, data))
@@ -159,6 +173,17 @@ async def _execute_command(command: str) -> None:
         level = command.split(":")[1]
         if level in ("low", "medium", "high"):
             os.environ["CLAUDE_EFFORT"] = level
+
+
+async def _refresh_all_changes() -> None:
+    """Scan all projects and broadcast their git changes."""
+    try:
+        from bot.git_ops import get_all_projects_changes
+        all_changes = await get_all_projects_changes()
+        for changes in all_changes:
+            await broadcast(CHANGES_EVENT, changes)
+    except Exception as e:
+        log.error(f"Failed to refresh all changes: {e}")
 
 
 async def _execute_git_action(action: str, data: dict) -> None:
@@ -233,6 +258,57 @@ async def _check_auth_handler(request: web.Request) -> web.Response:
     return web.json_response({"authenticated": False}, status=401)
 
 
+async def _kronos_handler(request: web.Request) -> web.Response:
+    """Return Kronos prediction history + actual OHLCV + accuracy stats."""
+    if not _check_auth(request):
+        return web.Response(status=401, text="Unauthorized")
+
+    try:
+        from bot.kronos import get_accuracy_stats, fetch_ohlcv, _get_db
+        import json as _json
+
+        db = _get_db()
+        rows = db.execute(
+            "SELECT id, created_at, symbol, timeframe, current_price, predictions, "
+            "verified, actual_prices, direction_correct, mae "
+            "FROM predictions ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+
+        predictions = []
+        for row in rows:
+            predictions.append({
+                "id": row[0],
+                "created_at": row[1],
+                "symbol": row[2],
+                "timeframe": row[3],
+                "current_price": row[4],
+                "predictions": _json.loads(row[5]),
+                "verified": bool(row[6]),
+                "actual_prices": _json.loads(row[7]) if row[7] else None,
+                "direction_correct": row[8],
+                "mae": row[9],
+            })
+
+        # Last 48h of actual BTC/USDT candles
+        try:
+            ohlcv = await fetch_ohlcv(limit=48)
+            actual = [{"timestamp": c[0], "close": c[4]} for c in ohlcv]
+        except Exception as e:
+            log.warning(f"Kronos API: failed to fetch OHLCV: {e}")
+            actual = []
+
+        stats = get_accuracy_stats()
+
+        return web.json_response({
+            "predictions": predictions,
+            "actual": actual,
+            "stats": stats,
+        })
+    except Exception as e:
+        log.error(f"Kronos API error: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ── Static files ──────────────────────────────────────────────────────
 
 async def _index_handler(request: web.Request) -> web.FileResponse:
@@ -251,6 +327,7 @@ async def start_server() -> None:
     # API routes
     app.router.add_post("/api/auth", _auth_handler)
     app.router.add_get("/api/auth/check", _check_auth_handler)
+    app.router.add_get("/api/kronos", _kronos_handler)
     app.router.add_get(WS_PATH, _ws_handler)
 
     # Static dashboard files

@@ -1,5 +1,5 @@
 """
-Core commands: /start, /status, /new, /resume, /compact
+Core commands: /start, /status, /new, /resume, /compact, /forget, /memories
 """
 
 import os
@@ -9,8 +9,9 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
 from bot.auth import is_allowed_user
-from bot.config import DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_MAX_TURNS
+from bot.config import DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_MAX_TURNS, MEM0_ENABLED
 from bot.handlers._state import bridge, get_project_for_message, get_thread_id, plan_mode, voice_requested
+from bot import memory as mem
 
 router = Router()
 
@@ -35,7 +36,9 @@ async def cmd_start(message: Message) -> None:
         "/plan — prossimo messaggio in planning mode\n"
         "/compact — forza compattazione contesto\n"
         "/voice — forza risposta vocale\n"
-        "/text — mostra testo ultima risposta vocale"
+        "/text — mostra testo ultima risposta vocale\n"
+        "/memories — mostra ricordi su di te\n"
+        "/forget — cancella tutti i ricordi di questa chat"
     )
 
 
@@ -64,6 +67,10 @@ async def cmd_status(message: Message) -> None:
         lines.append(f"Directory: `{project_path}`")
     else:
         lines.append("Progetto: nessuno (workspace generico)")
+
+    if MEM0_ENABLED:
+        memories = await mem.get_all(message.chat.id)
+        lines.append(f"Ricordi: {len(memories)}")
 
     await message.reply("\n".join(lines))
 
@@ -102,3 +109,36 @@ async def cmd_compact(message: Message) -> None:
     bridge.reset_session(message.chat.id, project_name)
     ctx = f"**{project_name}**" if project_name else "generale"
     await message.reply(f"Contesto compattato (sessione {ctx} resettata).")
+
+
+@router.message(Command("memories"))
+async def cmd_memories(message: Message) -> None:
+    if not is_allowed_user(message.from_user.id):
+        return
+
+    if not MEM0_ENABLED:
+        await message.reply("Memoria disabilitata.")
+        return
+
+    memories = await mem.get_all(message.chat.id)
+    if not memories:
+        await message.reply("Nessun ricordo salvato per questa chat.")
+        return
+
+    lines = [f"Ricordi ({len(memories)}):"]
+    for i, m in enumerate(memories, 1):
+        lines.append(f"{i}. {m.get('memory', '?')}")
+    await message.reply("\n".join(lines))
+
+
+@router.message(Command("forget"))
+async def cmd_forget(message: Message) -> None:
+    if not is_allowed_user(message.from_user.id):
+        return
+
+    if not MEM0_ENABLED:
+        await message.reply("Memoria disabilitata.")
+        return
+
+    await mem.delete_all(message.chat.id)
+    await message.reply("Tutti i ricordi di questa chat sono stati cancellati.")

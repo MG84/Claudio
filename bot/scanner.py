@@ -65,11 +65,34 @@ async def market_scanner_loop(bot: Bot) -> None:
     while True:
         try:
             brief = await _build_market_brief()
-            if brief and chat_id:
-                await bot.send_message(chat_id, brief)
+            if not brief:
+                await asyncio.sleep(_SCANNER_INTERVAL)
+                continue
 
             from bot.monitor import emit
             await emit("market_scan", {"pairs": TRADING_PAIRS})
+
+            # Query Claude for analysis and autonomous decision
+            from bot.trading import is_autonomous
+            from bot.handlers._state import bridge
+
+            if is_autonomous() and chat_id:
+                prompt = (
+                    "MARKET SCAN AUTONOMO — Analizza i dati e decidi.\n"
+                    "Se vedi un setup chiaro, esegui il trade con place_order().\n"
+                    "Se non sei sicuro, HOLD.\n"
+                    "Rispondi con la tua analisi e decisione.\n\n"
+                    f"{brief}"
+                )
+                try:
+                    response = await bridge.query(chat_id, prompt)
+                    if response and chat_id:
+                        await bot.send_message(chat_id, f"Analisi autonoma:\n{response[:4000]}")
+                except Exception as e:
+                    log.error(f"Autonomous query failed: {e}")
+            elif chat_id:
+                # Supervised mode — just send the brief
+                await bot.send_message(chat_id, brief)
 
         except Exception as e:
             log.error(f"Scanner error: {e}")

@@ -16,12 +16,25 @@ from bot.monitor import emit
 from bot.prompts import PLANNING_PREFIX
 from bot.handlers._state import (
     bridge, topic_map, get_thread_id, get_project_for_message,
-    plan_mode, voice_requested, last_response,
+    plan_mode, voice_requested, last_response, last_user_message_id,
 )
 
 log = logging.getLogger("claudio.messages")
 
 router = Router()
+
+
+def _should_quote(message: Message) -> bool:
+    """Quote only if the user sent more messages after this one."""
+    key = (message.chat.id, get_thread_id(message))
+    return last_user_message_id.get(key) != message.message_id
+
+
+async def _send_text(message: Message, text: str) -> Message:
+    """Send text — reply with quote only if not the latest user message."""
+    if _should_quote(message):
+        return await message.reply(text)
+    return await message.answer(text)
 
 
 async def _download_file(message: Message, prefix: str, suffix: str) -> Path | None:
@@ -58,8 +71,13 @@ async def handle_message(message: Message) -> None:
     if message.text and message.text.startswith("/"):
         return
 
+    # Track last user message for smart quoting
+    chat_key_msg = (message.chat.id, get_thread_id(message))
+    last_user_message_id[chat_key_msg] = message.message_id
+
     # Build prompt from text + attachments
     parts: list[str] = []
+    transcription: str | None = None
 
     # Voice messages — transcribe and keep file
     if message.voice:
@@ -112,6 +130,11 @@ async def handle_message(message: Message) -> None:
 
     project_name, project_path = get_project_for_message(message)
 
+    # Extract clean user text for memory (avoid storing technical metadata)
+    user_text = message.text or message.caption
+    if message.voice and transcription:
+        user_text = transcription
+
     await message.bot.send_chat_action(message.chat.id, "typing")
     thinking_msg = await message.reply("Sto pensando...")
 
@@ -119,6 +142,7 @@ async def handle_message(message: Message) -> None:
         response = await bridge.query(
             chat_id=message.chat.id,
             prompt=prompt,
+            user_text=user_text,
             project_name=project_name,
             project_path=project_path,
         )
@@ -149,10 +173,10 @@ async def handle_message(message: Message) -> None:
                 ogg_path.unlink(missing_ok=True)
             else:
                 for chunk in split_message(response):
-                    await message.reply(chunk)
+                    await _send_text(message, chunk)
         else:
             for chunk in split_message(response):
-                await message.reply(chunk)
+                await _send_text(message, chunk)
 
         # Check if Claude dropped files in the send queues
         await _flush_send_queues(message)

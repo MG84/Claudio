@@ -16,6 +16,7 @@ topic_map = TopicMap()
 plan_mode: set[tuple[int, int | None]] = set()
 voice_requested: set[tuple[int, int | None]] = set()
 last_response: dict[tuple[int, int | None], str] = {}
+last_user_message_id: dict[tuple[int, int | None], int] = {}
 
 
 def get_thread_id(message: Message) -> int | None:

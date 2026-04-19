@@ -35,7 +35,7 @@ class DiffHunk:
 @dataclass
 class DiffFile:
     path: str
-    status: str  # "modified" | "added" | "deleted" | "renamed"
+    status: str  # "modified" | "added" | "deleted" | "renamed" | "untracked"
     staged: bool
     insertions: int = 0
     deletions: int = 0
@@ -200,7 +200,15 @@ async def get_project_diff(project_path: str) -> dict | None:
     unstaged_files = parse_unified_diff(unstaged_raw, staged=False)
     staged_files = parse_unified_diff(staged_raw, staged=True)
 
-    all_files = unstaged_files + staged_files
+    # Untracked files
+    untracked_raw, _, _ = await _run_git(pp, "ls-files", "--others", "--exclude-standard")
+    untracked_files = [
+        DiffFile(path=f, status="untracked", staged=False)
+        for f in untracked_raw.strip().split("\n")
+        if f.strip()
+    ]
+
+    all_files = unstaged_files + staged_files + untracked_files
 
     if not all_files:
         return None
@@ -282,3 +290,20 @@ async def commit(project_path: str, message: str) -> str | None:
     # Extract commit hash
     hash_out, _, _ = await _run_git(str(p), "rev-parse", "--short", "HEAD")
     return hash_out.strip() or None
+
+
+async def get_all_projects_changes() -> list[dict]:
+    """Scan all git-enabled projects for changes."""
+    from bot.projects import discover_projects
+
+    results = []
+    for project in discover_projects():
+        if not project.has_git:
+            continue
+        try:
+            diff = await get_project_diff(project.path)
+            if diff:
+                results.append(diff)
+        except Exception:
+            pass  # skip broken projects
+    return results
