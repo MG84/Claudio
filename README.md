@@ -12,6 +12,10 @@ Docker Container "claudio" (OrbStack)
     ├── Telegram Bot (aiogram)
     ├── Claude Agent SDK → Claude Code CLI
     ├── faster-whisper (local STT)
+    ├── Kronos + Chronos-Bolt (crypto forecasting)
+    ├── Trading engine (paper + live via ccxt)
+    ├── Kraken CLI MCP server (market data + paper trading)
+    ├── Mem0 → Ollama + Qdrant (persistent memory)
     ├── Monitoring Dashboard (WebSocket + static)
     └── Access to ~/Documents/Development/
             │
@@ -46,6 +50,20 @@ Everything runs locally. No cloud services, no API costs beyond the Claude Max s
 - **Cloudflare Tunnel** sidecar for remote access
 - **Password protected** — cookie-based auth
 - **Event timeline** per project with tool use details
+
+### Trading
+- **Crypto forecasting** — Kronos (OHLC multivariate) + Chronos-Bolt (univariate with uncertainty bands), hourly loop
+- **Paper + live trading** — simulated in SQLite or real orders via ccxt, hard-coded risk limits
+- **Market data** — RSI, EMA, MACD, Bollinger, ATR via ccxt (Binance) + pandas-ta, multi-pair
+- **Kraken MCP** — native MCP server for direct market data and paper trading on Kraken
+- **Risk manager** — max 20% per position, 15% drawdown kill switch, mandatory stop-loss
+- **Market scanner** — hourly autonomous analysis, 5-min risk monitor with auto kill switch
+- **Telegram commands** — `/portfolio`, `/market`, `/trades`, `/mode`, `/kill`, `/autonomous`, `/scan`
+
+### Memory
+- **Long-term memory** per chat via Mem0 (Ollama + Qdrant, 100% local)
+- **Fact extraction** — automatically extracts and stores facts from conversations
+- **Survives resets** — `/new` resets session but preserves memories
 
 ### Self-evolution
 - Claudio has access to its own source code
@@ -149,6 +167,17 @@ bash scripts/install_tts_service.sh
 | `/compact` | Reset context |
 | `/voice` | Force voice response for next text message |
 | `/text` | Show text of last voice response |
+| `/memories` | Show memories for this chat |
+| `/forget` | Delete all memories for this chat |
+| `/predict` | On-demand crypto prediction (Kronos AI) |
+| `/accuracy` | Prediction accuracy stats |
+| `/portfolio` | Balance, open positions, daily P&L |
+| `/market [pair]` | Market snapshot with indicators + predictions |
+| `/trades [n]` | Recent trade history with P&L |
+| `/mode paper\|live` | Switch trading mode |
+| `/kill` | Emergency close all positions |
+| `/autonomous on\|off` | Enable/disable autonomous trading |
+| `/scan` | Full market scan with analysis |
 
 ## Voice Cloning
 
@@ -189,12 +218,16 @@ Claudio/
 │   ├── claude_bridge.py     # Claude Agent SDK bridge
 │   ├── voice.py             # STT + TTS
 │   ├── monitor.py           # Event tracking + WebSocket
-│   ├── ws_server.py         # Dashboard server
+│   ├── ws_server.py         # Dashboard server (aiohttp, git action handler)
+│   ├── git_ops.py           # Git diff parsing, stage, revert, commit
 │   ├── projects.py          # Project discovery
 │   ├── text_cleaner.py      # TTS text cleaning
 │   ├── cleanup.py           # Periodic file cleanup
 │   ├── auth.py              # User authorization
-│   └── handlers/            # Telegram command handlers
+│   └── handlers/            # Telegram command handlers (7 files)
+├── tests/
+│   ├── test_git_ops.py      # Git ops tests (37 tests)
+│   └── test_memory.py       # Memory tests (20 tests)
 ├── scripts/
 │   ├── entrypoint.sh
 │   ├── setup_tts.sh
@@ -216,6 +249,10 @@ Claudio/
 | Monitoring | aiohttp WebSocket + Next.js static |
 | Tunnel | Cloudflare Quick Tunnel |
 | Event storage | SQLite (7-day retention) |
+| Crypto forecasting | Kronos-small + Chronos-Bolt (CPU) |
+| Trading | ccxt (paper + live) + Kraken CLI MCP |
+| Technical indicators | pandas-ta (RSI, EMA, MACD, Bollinger, ATR) |
+| Memory | Mem0 + Ollama + Qdrant (local) |
 
 ## License
 
