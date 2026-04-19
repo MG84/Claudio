@@ -8,7 +8,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import secrets
 import weakref
 
 from aiohttp import web
@@ -28,10 +27,10 @@ MAX_WS_CLIENTS = 20
 
 
 def _generate_auth_token() -> str:
-    """Generate a session token from the password."""
+    """Generate a deterministic session token from the password."""
     if not DASHBOARD_PASSWORD:
         return ""
-    return hashlib.sha256(f"{DASHBOARD_PASSWORD}:{secrets.token_hex(8)}".encode()).hexdigest()
+    return hashlib.sha256(f"claudio:{DASHBOARD_PASSWORD}".encode()).hexdigest()
 
 
 def _verify_password(password: str) -> bool:
