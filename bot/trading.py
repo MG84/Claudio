@@ -28,6 +28,7 @@ from bot.config import (
     TRADES_DB_PATH, MEMORY_DIR,
     EXCHANGE_ID, EXCHANGE_API_KEY, EXCHANGE_API_SECRET,
 )
+from bot.monitor import emit
 
 log = logging.getLogger("claudio.trading")
 
@@ -311,6 +312,13 @@ async def place_order(side: str, pair: str, order_type: str, volume: float,
     trade_id = cursor.lastrowid
     db.commit()
 
+    asyncio.create_task(emit("trade_executed", {
+        "trade_id": trade_id, "pair": pair, "side": side,
+        "volume": volume, "price": price, "mode": "paper",
+        "stop_loss": stop_loss, "take_profit": take_profit,
+        "action": "opened",
+    }))
+
     log.info(f"Paper trade #{trade_id}: {side} {volume} {pair} @ ${price:,.2f}")
     return {"ok": True, "trade_id": trade_id, "mode": "paper", "price": price}
 
@@ -396,6 +404,13 @@ async def close_position(trade_id: int, close_price: float | None = None) -> dic
         (close_price, now, round(pnl, 2), trade_id),
     )
     db.commit()
+
+    asyncio.create_task(emit("trade_executed", {
+        "trade_id": trade_id, "pair": pair, "side": side,
+        "volume": volume, "close_price": close_price,
+        "pnl_usd": round(pnl, 2), "mode": "paper",
+        "action": "closed",
+    }))
 
     log.info(f"Closed trade #{trade_id}: P&L ${pnl:,.2f}")
     return {"ok": True, "trade_id": trade_id, "pnl_usd": round(pnl, 2), "mode": "paper"}
