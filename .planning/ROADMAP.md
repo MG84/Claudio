@@ -45,3 +45,10 @@
 - **Key files:** `bot/prompts.py`, `CLAUDE.md`, `GUIDA.md`
 - **Depends on:** Phase 1-6
 - **Plans:** 07-01-PLAN.md
+
+### Phase 8: Dashboard Backend Prerequisites
+- **Goal:** REST endpoints, trade_executed events, auth fix, deploy tooling for trading dashboard
+- **Key files:** `bot/trading.py`, `bot/ws_server.py`, `scripts/deploy_dashboard.sh`
+- **Depends on:** Phase 1-7
+- **Plans:** 08-01-PLAN.md (cleanup + events + auth), 08-02-PLAN.md (REST endpoints + CORS + deploy + docs)
+- **Source:** `docs/TRADING_DASHBOARD.md` (Wave 0)
